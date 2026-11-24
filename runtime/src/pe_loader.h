@@ -33,6 +33,7 @@ struct Module {
     uint32_t entry_rva = 0;
     bool relocated = false;
     bool initialised = false;
+    bool attach_failed = false;
 
     // The image's exception directory (.pdata), registered with RtlAddFunctionTable by load() so that exception
     // dispatch and stack walks can unwind through its frames. Removed when the loader is destroyed.

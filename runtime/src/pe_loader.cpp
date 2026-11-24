@@ -224,6 +224,7 @@ void Loader::initialise() {
 }
 
 void Loader::initialise(Module& m) {
+    if (m.attach_failed) throw std::runtime_error(m.name + ": DllMain returned FALSE");
     if (m.initialised) return;
 
     // TLS was installed by load(); initialise() only delivers the events, so no slot is allocated or written twice.
@@ -235,7 +236,7 @@ void Loader::initialise(Module& m) {
         if (m.entry_rva >= m.size) throw std::runtime_error(m.name + ": the entry point is outside the image");
         auto entry = reinterpret_cast<BOOL(NTAPI*)(void*, DWORD, void*)>(m.base + m.entry_rva);
         if (!entry(m.base, DLL_PROCESS_ATTACH, nullptr)) {
-            m.initialised = true;  // it ran: a second DLL_PROCESS_ATTACH would be wrong
+            m.attach_failed = true;  // do not repeat attach or let a retry initialise later modules
             throw std::runtime_error(m.name + ": DllMain returned FALSE");
         }
     }
