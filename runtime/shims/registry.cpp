@@ -95,6 +95,8 @@ ReturnClass classify(const std::string& dll, const std::string& name) {
         if (starts_with(name, "CreateDXGIFactory") || name == "DXGIGetDebugInterface1" ||
             name == "DXGIDeclareAdapterRemovalSupport")
             return ReturnClass::HResult;
+    } else if (dll == "dstorage.dll" || dll == "dstorage_xs.dll") {
+        if (name == "DStorageGetFactory") return ReturnClass::HResult;
     } else if (dll == "xgameruntime.dll") {
         if (name == "XGameRuntimeInitialize" || name == "XGameEventWrite") return ReturnClass::HResult;
         for (const char* n : kNotHResult)
@@ -183,6 +185,16 @@ extern "C" uint64_t rt_unimplemented(const char* what, const CallInfo* info) {
         std::fflush(stderr);
         TerminateProcess(GetCurrentProcess(), kStopExitCode);
         return 0;  // not reached
+    }
+    // DStorageGetFactory has a documented output pointer. Leave the import unresolved, but report
+    // failure in log mode too so callers cannot mistake the missing factory for a successful call.
+    if (std::strcmp(what, "dstorage.dll!DStorageGetFactory") == 0 ||
+        std::strcmp(what, "dstorage_xs.dll!DStorageGetFactory") == 0) {
+        if (first) std::fprintf(stderr, "[rt] unimplemented: %s (factory unavailable)\n", what);
+        auto** out = reinterpret_cast<void**>(info->rdx);
+        if (!out) return static_cast<uint32_t>(E_POINTER);
+        *out = nullptr;
+        return kENotImpl;
     }
     if (first)
         std::fprintf(stderr, "[rt] unimplemented: %s%s\n", what,

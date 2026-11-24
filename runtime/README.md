@@ -72,7 +72,9 @@ environment variable `RECITY_UNIMPLEMENTED`, read once per process:
 | `fail` | the same, but returns `E_NOTIMPL` (`0x80004001`) for imports known to return an `HRESULT`, and 0 for all others. |
 | `stop` | on the first call prints the import, the caller's return address as `module+RVA`, and rcx, rdx, r8 and r9 as the game passed them; then breaks if a debugger is attached (continuing returns the `fail` value), else ends the process with exit code 3. |
 
-No mode writes to an out parameter: a function that fills one in on success leaves it as the caller had it. Under
+The generic thunk leaves output parameters unchanged. For an unresolved `DStorageGetFactory`, both
+`log` and `fail` return `E_NOTIMPL` and clear the factory output, or return `E_POINTER` for a null
+output pointer. Under
 `log` an `HRESULT` function therefore returns `S_OK` with its outputs unset, which is why `fail` exists; with `fail`
 the caller sees an error and can take its own failure path. Any other value is reported and treated as `log`.
 
