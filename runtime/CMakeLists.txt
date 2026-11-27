@@ -648,6 +648,11 @@ if(TARGET Vulkan::Headers)
       message(STATUS "glslangValidator not found: d3d12_descriptor_test skips its shader")
     endif()
 
+    # Desktop presentation probe. Run explicitly with a Vulkan-capable display and the validation layer.
+    add_executable(win_runtime_present_probe EXCLUDE_FROM_ALL test/win_runtime_present_probe.cpp)
+    target_link_libraries(win_runtime_present_probe PRIVATE gta6rt_d3d12_com user32)
+    target_compile_definitions(win_runtime_present_probe PRIVATE NOMINMAX)
+
     # Differential regression: run explicitly (requires Vulkan hardware and Windows WARP).
     add_executable(d3d12_clear_test test/d3d12_clear_test.cpp)
     target_link_libraries(d3d12_clear_test PRIVATE gta6rt_d3d12_com d3d12 dxgi)
