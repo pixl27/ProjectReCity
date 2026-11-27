@@ -110,9 +110,12 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "VKH_SGPRS: expected up to 32 comma-separated words, got \"%s\"\n", sgprs_env);
         return 2;
     }
+    const char* heap_dump = std::getenv("VKH_HEAP_DUMP");
+    void* heap_mapping = nullptr;
     const uint32_t heap_bytes = 64 * 1024;
     const char* heap_env = std::getenv("VKH_HEAP");
     if (heap_env && !*heap_env) heap_env = nullptr;
+    if (heap_dump && !heap_env) return 2;
     std::vector<std::pair<uint32_t, uint32_t>> heap_words;
     if (heap_env && !parse_heap(heap_env, heap_words, heap_bytes)) {
         std::fprintf(stderr, "VKH_HEAP: expected addr=word pairs, 4-byte aligned below 0x%x, got \"%s\"\n",
@@ -254,7 +257,28 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "unsupported: no geometryShader\n");
         return 77;
     }
+    const char* replay_stage = std::getenv("VKH_BALLOT_REPLAY_STAGE");
+    uint32_t replay_vertices = 3;
+    VkPipelineStageFlags replay_access = 0;
     VkPhysicalDeviceFeatures feats{};
+    uint32_t replay_passes = 2;
+    if (replay_stage) {
+        if (const char* passes = std::getenv("VKH_BALLOT_PASSES")) {
+            if (!parse_u32(passes, replay_passes) || *passes || (replay_passes != 2 && replay_passes != 3)) return 2;
+        }
+        if (!heap_env || mesh || gs_path || clip_shifts) return 2;
+        if (!std::strcmp(replay_stage, "vs")) {
+            if (!f2q.features.vertexPipelineStoresAndAtomics) return 77;
+            // Enough unique vertices for at least one full graphics subgroup in each capture draw.
+            replay_vertices = 192;
+            feats.vertexPipelineStoresAndAtomics = VK_TRUE;
+            replay_access = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+        } else if (!std::strcmp(replay_stage, "ps")) {
+            if (!f2q.features.fragmentStoresAndAtomics) return 77;
+            feats.fragmentStoresAndAtomics = VK_TRUE;
+            replay_access = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        } else return 2;
+    }
     if (clip_shifts && !f2q.features.shaderClipDistance) {
         std::fprintf(stderr, "unsupported: shaderClipDistance\n");
         return 77;
@@ -380,6 +404,11 @@ int main(int argc, char** argv) {
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo reqSg{
         VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
     reqSg.requiredSubgroupSize = req_sg;
+    if (replay_stage && pc[1] == 0) {
+        if (req_sg || !f13q.subgroupSizeControl) return 77;
+        const unsigned stage_index = replay_access == VK_PIPELINE_STAGE_VERTEX_SHADER_BIT ? 0 : 1;
+        stages[stage_index].flags |= VK_PIPELINE_SHADER_STAGE_CREATE_ALLOW_VARYING_SUBGROUP_SIZE_BIT;
+    }
     if (req_sg > 0 && f13q.subgroupSizeControl &&
         req_sg >= sgProps.minSubgroupSize && req_sg <= sgProps.maxSubgroupSize) {
         if (mesh && (sgProps.requiredSubgroupSizeStages & VK_SHADER_STAGE_MESH_BIT_EXT))
@@ -450,6 +479,7 @@ int main(int argc, char** argv) {
         VkDeviceMemory hmem; CHECK(vkAllocateMemory(dev, &hai, nullptr, &hmem));
         CHECK(vkBindBufferMemory(dev, heap, hmem, 0));
         void* hp; CHECK(vkMapMemory(dev, hmem, 0, heap_bytes, 0, &hp));
+        heap_mapping = hp;
         std::memset(hp, 0, heap_bytes);
         for (auto [addr, word] : heap_words) std::memcpy(static_cast<char*>(hp) + addr, &word, 4);
         VkBufferDeviceAddressInfo hda{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
@@ -468,6 +498,25 @@ int main(int argc, char** argv) {
     for (float& c : clears[0].color.float32) c = -1;   // marks untouched pixels
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.renderPass = rp; rbi.framebuffer = fb; rbi.renderArea = sc; rbi.clearValueCount = rpi.attachmentCount; rbi.pClearValues = clears;
+    if (replay_stage) {
+        LOADD(vkCmdPushConstants);
+        LOADD(vkCmdPipelineBarrier);
+        // Draw one physical half per pass, with a device-side dependency before reading the shared heap.
+        for (uint32_t phase = 0; phase < replay_passes; ++phase) {
+            pc[0] = phase;
+            vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+            vkCmdPushConstants(cmd, pl, pcs, 0, sizeof(pc), pc);
+            vkCmdDraw(cmd, replay_vertices, 1, 0, 0);
+            vkCmdEndRenderPass(cmd);
+            VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            const auto stages = replay_access | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            vkCmdPipelineBarrier(cmd, stages, stages, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+        }
+        pc[0] = replay_passes;
+    }
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
     if (group_readback) {
         LOADD(vkCmdClearAttachments);
@@ -489,15 +538,29 @@ int main(int argc, char** argv) {
     if (mesh)
         reinterpret_cast<PFN_vkCmdDrawMeshTasksEXT>(vkGetDeviceProcAddr(dev, "vkCmdDrawMeshTasksEXT"))(cmd, groups[0], groups[1], groups[2]);
     else
-        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vkCmdDraw(cmd, replay_vertices, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
     VkBufferImageCopy reg{}; reg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; reg.imageExtent = {W, H, 1};
     vkCmdCopyImageToBuffer(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &reg);
+    if (heap_dump) {
+        LOADD(vkCmdPipelineBarrier);
+        VkMemoryBarrier visible{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        visible.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        visible.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                             0, 1, &visible, 0, nullptr, 0, nullptr);
+    }
     CHECK(vkEndCommandBuffer(cmd));
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO}; si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
     CHECK(vkQueueSubmit(q, 1, &si, VK_NULL_HANDLE));
     CHECK(vkQueueWaitIdle(q));
     void* p; CHECK(vkMapMemory(dev, bmem, 0, bi.size, 0, &p));
+    if (heap_dump) {
+        std::ofstream dump(heap_dump, std::ios::binary);
+        dump.write(static_cast<const char*>(heap_mapping), heap_bytes);
+        dump.close();
+        if (!dump) return 1;
+    }
     std::ofstream output(argv[3], std::ios::binary);
     output.write(static_cast<const char*>(p), std::streamsize(bi.size));
     output.close();
