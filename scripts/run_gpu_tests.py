@@ -261,6 +261,10 @@ def dump_words(msg: str) -> list[int] | None:
     return [int(x) for x in m.group(1).split()] if m else None
 
 
+def missing_result(expected: str, msg: str) -> str:
+    return f"helper exited 0 without {expected}\n{msg}".rstrip()
+
+
 def judge_cs_dump(rc: int, msg: str, want: list[int], *, wave64: bool, partial: bool, emulated: bool,
                   hexwords: bool = False) -> tuple[bool | None, str]:
     """Judge one vk_compute_test "dump" run: (True, words), (False, why), or (None, why) when the device can't run it.
@@ -270,11 +274,13 @@ def judge_cs_dump(rc: int, msg: str, want: list[int], *, wave64: bool, partial: 
     no64 = partial and not emulated and not any(int(x) >= 64 for x in re.findall(r"subgroup \d+\.\.(\d+)", msg))
     if (wave64 and rc == 77) or (no64 and rc == 0):
         return None, "SKIP (no 64-wide compute subgroup on this device)"
-    if rc == 0 and wave64 and "compute subgroup size: 64" not in msg.splitlines():
-        return False, "64-wide subgroup was not confirmed (rebuild vk_compute_test)"
-    words = dump_words(msg)
-    if rc != 0 or words is None:
+    if rc != 0:
         return False, msg
+    words = dump_words(msg)
+    if words is None:
+        return False, missing_result("a valid out[0..7] line (eight decimal words)", msg)
+    if wave64 and "compute subgroup size: 64" not in msg.splitlines():
+        return False, "64-wide subgroup was not confirmed (rebuild vk_compute_test)"
     vals = words[:len(want)]
     return vals == want, " ".join((hex if hexwords else str)(x) for x in vals)
 
@@ -629,10 +635,8 @@ def run_suite(a, work: str) -> int:
             # These per-lane results do not require a particular subgroup width.
             rc, msg = run_cmd([vk_compute, spv, "1", "dump"], env=cs_env)
             want = CMPX_CLASS_WORDS if name == "cs_cmpx_class_f32" else [0x12345678, 0x12345678, 0, 0xEEEEEEEE]
-            words = dump_words(msg)
-            vals = words[:len(want)] if words else []
-            results.append((name, rc == 0 and vals == want,
-                            " ".join(hex(x) for x in vals) if vals else msg))
+            results.append((name, *judge_cs_dump(rc, msg, want, wave64=False, partial=False, emulated=False,
+                                                 hexwords=True)))
         elif name == "cs_fmt_1010102":
             problem = fmt_1010102_test(a.build, spirv_dir, cs_env)
             results.append((name, not problem, problem or "64/64 dumped words exact"))
@@ -646,20 +650,18 @@ def run_suite(a, work: str) -> int:
         elif name == "cs_user_sgprs":
             # vk_compute_test seeds s4..s7 from VKC_SGPRS; the shader stores them back.
             rc, msg = run_cmd([vk_compute, spv, "1", "dump"], env=dict(cs_env or os.environ, **USER_SGPRS_ENV))
-            words = dump_words(msg)
-            vals = words[:len(USER_SGPRS_WORDS)] if words else []
-            results.append((name, rc == 0 and vals == USER_SGPRS_WORDS,
-                            " ".join(hex(x) for x in vals) if vals else msg))
+            results.append((name, *judge_cs_dump(rc, msg, USER_SGPRS_WORDS, wave64=False, partial=False,
+                                                 emulated=False, hexwords=True)))
         elif name == "cs_cvt_f32_sat":
             # #300's saturating float -> int conversions: one dispatch per input word in s4 (VKC_SGPRS).
             wrong = []
             for bits, unsigned, signed in CVT_F32_SAT_CASES:
                 rc, msg = run_cmd([vk_compute, spv, "1", "dump"],
                                   env=dict(cs_env or os.environ, VKC_SGPRS=f"{bits:#010x}"))
-                words = dump_words(msg)
-                if rc != 0 or not words or words[:2] != [unsigned, signed]:
-                    got = " ".join(hex(x) for x in words[:2]) if words else msg.splitlines()[-1] if msg else "no output"
-                    wrong.append(f"{bits:#010x} gave {got}, want {unsigned:#x} {signed:#x}")
+                ok, detail = judge_cs_dump(rc, msg, [unsigned, signed], wave64=False, partial=False,
+                                           emulated=False, hexwords=True)
+                if not ok:
+                    wrong.append(f"{bits:#010x} expected {unsigned:#x} {signed:#x}, got {detail or 'no output'}")
             n = len(CVT_F32_SAT_CASES)
             results.append((name, not wrong, f"{n}/{n} inputs exact" if not wrong
                             else f"{len(wrong)}/{n} inputs wrong, first {wrong[0]}"))
@@ -795,8 +797,10 @@ def run_suite(a, work: str) -> int:
                 exp_b = struct.unpack("<e", struct.pack("<e", 128.0 / 255.0))[0]
                 ok = abs(r - exp_b) <= 0.05 and abs(g - exp_b) <= 0.05 and abs(b - exp_b) == 0.0 and alpha == 1.0
                 results.append((name, ok, f"center(32,32)=({r:.6f}, {g:.6f}, {b:.6f}, {alpha:.1f})"))
+            elif rc == 0 and "PASSED" not in msg:
+                results.append((name, False, missing_result("the PASSED marker", msg)))
             else:
-                results.append((name, rc == 0 and "PASSED" in msg, msg.splitlines()[-1] if msg else ""))
+                results.append((name, rc == 0, msg.splitlines()[-1] if msg else ""))
         elif name == "ps_gather_wrap":
             # SHADER-36: image_gather4_l_o under wrap/mirror/clamp/mirror-once S#s; every pixel holds GATHER_WRAP.
             tool = os.path.join(a.build, "vk_texture_test" + ext)

@@ -27,6 +27,19 @@ def judge(rc, msg, **kw):
 
 
 class DumpWords(unittest.TestCase):
+    def test_success_without_dump_explains_missing_result(self):
+        for msg in ("", DEVICE_64, "out[0..7] = 55 48 BAD"):
+            for wave64 in (False, True):
+                with self.subTest(msg=msg, wave64=wave64):
+                    ok, detail = judge(0, msg, wave64=wave64)
+                    self.assertIs(ok, False)
+                    self.assertIn("exited 0", detail)
+                    self.assertIn("eight decimal words", detail)
+                    self.assertIn(msg.strip(), detail)
+
+    def test_helper_error_remains_a_helper_error(self):
+        self.assertEqual(judge(1, "device lost"), (False, "device lost"))
+
     def test_eight_decimal_words(self):
         self.assertEqual(rgt.dump_words("noise\n" + dump(WANT) + "tail\n"), WANT + [0] * 6)
 
@@ -59,6 +72,26 @@ class PackedFormatFixture(unittest.TestCase):
             check_fmt.assert_called_once()
             self.assertIn(problem, output.getvalue())
             self.assertIn("0/1 passed", output.getvalue())
+
+
+class MissingTextureResult(unittest.TestCase):
+    def test_device_message_without_success_marker(self):
+        name = "ps_cube_sample"
+        with tempfile.TemporaryDirectory() as tmp:
+            args = SimpleNamespace(filter=name, build=tmp, llvm_mc="unused")
+
+            def translate(_cmd, env=None, gpu=True):
+                (Path(tmp) / "spirv" / f"{name}.spv").touch()
+                return 0, ""
+
+            output = io.StringIO()
+            result = SimpleNamespace(returncode=0, stdout="", stderr="ok -> framebuffer.raw")
+            with (patch.object(rgt, "assemble_to_s", side_effect=lambda _mc, _src, dst, _name: Path(dst).touch()),
+                  patch.object(rgt, "spirv_as"), patch.object(rgt, "run_cmd", side_effect=translate),
+                  patch.object(rgt.subprocess, "run", return_value=result), contextlib.redirect_stdout(output)):
+                self.assertEqual(rgt.run_suite(args, tmp), 1)
+            self.assertIn("helper exited 0 without the PASSED marker", output.getvalue())
+            self.assertIn(result.stderr, output.getvalue())
 
 
 class WholeWaveDump(unittest.TestCase):
