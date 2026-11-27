@@ -178,5 +178,32 @@ class Wave32LaneDumps(unittest.TestCase):
                 self.assertIsNone(rgt.narrow_subgroup_skip(out))
 
 
+class WaveMaskFixture(unittest.TestCase):
+    def test_filtered_suite_dispatches_and_counts_once(self):
+        name = "cs_wavemask"
+        for mode, require_native in (("0", True), ("yes", False)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                args = SimpleNamespace(filter=name, build=tmp, llvm_mc="unused")
+                dispatches = []
+
+                def run(cmd, env=None, gpu=True):
+                    if gpu:
+                        dispatches.append(cmd)
+                        return 0, "compute subgroup size: 64\n0 mismatches"
+                    self.assertEqual("--wave64-emulate" in cmd, not require_native)
+                    (Path(tmp) / "spirv" / f"{name}.spv").touch()
+                    return 0, ""
+
+                output = io.StringIO()
+                with (patch.dict(rgt.os.environ, RECITY_W64_EMULATE=mode),
+                      patch.object(rgt, "assemble_to_s", side_effect=lambda mc, src, dst, n: Path(dst).touch()),
+                      patch.object(rgt, "spirv_as"), patch.object(rgt, "run_cmd", side_effect=run),
+                      contextlib.redirect_stdout(output)):
+                    self.assertEqual(rgt.run_suite(args, tmp), 0)
+                self.assertEqual(len(dispatches), 1)
+                self.assertEqual("--require-wave64" in dispatches[0], require_native)
+                self.assertIn("1/1 passed", output.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

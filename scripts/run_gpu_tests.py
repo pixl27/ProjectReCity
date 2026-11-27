@@ -664,25 +664,7 @@ def run_suite(a, work: str) -> int:
             results.append((name, not wrong, f"{n}/{n} inputs exact" if not wrong
                             else f"{len(wrong)}/{n} inputs wrong, first {wrong[0]}"))
         elif name == "cs_wavemask":
-            # Whole-wave mask test, as in check.py: needs a 64-wide subgroup, skipped where the device has none.
-            # With RECITY_W64_EMULATE=1 it was translated with --wave64-emulate and runs on any subgroup size.
-            emulated = os.environ.get("RECITY_W64_EMULATE") == "1"
-            args = [] if emulated else ["--require-wave64"]
-            rc, msg = run_cmd([vk_compute, spv, "1", "wavemask", *args], env=cs_env)
-            # Whole-wave mask test, as in check.py (require_wave64=not W64_EMULATED): ask for a 64-wide
-            # subgroup and skip where the device has none — unless wave64 is emulated, in which case it
-            # runs on any subgroup size (translated with --wave64-emulate) and passes on "0 mismatches".
-            emulated = w64_emulated()
-            rc, msg = run_cmd([vk_compute, spv, "1", "wavemask"] + (["--require-wave64"] if not emulated else []),
-                              env=cs_env)
-            if not emulated and rc == 77:
-                results.append((name, None, "SKIP (no 64-wide compute subgroup on this device)"))
-            elif not emulated and rc == 0 and "compute subgroup size: 64" not in msg.splitlines():
-                results.append((name, False, "64-wide subgroup was not confirmed (rebuild vk_compute_test)"))
-            else:
-                results.append((name, rc == 0, msg.splitlines()[-1] if msg else ""))
-            results.append((name,) + wavemask_check(vk_compute, spv, cs_env,
-                                                    os.environ.get("RECITY_W64_EMULATE") == "1"))
+            results.append((name, *wavemask_check(vk_compute, spv, cs_env, w64_emulated())))
         elif name in ("cs_store", "cs_smem_soffset_imm", "cs_w32_lane_wrap", "cs_movrelsd_2", "cs_w32_permute", "cs_w32_lds_u8_d16", "cs_wave64_ballot", "cs_wm_half_ops", "cs_wm_half_cmp", "cs_wm_bfm64", "cs_wm_scc_rfl", "cs_wqm_w64", "cs_wqm_w32", "cs_wqm_w64_half",
 
                       "cs_w64_mask_detect",
