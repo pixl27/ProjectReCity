@@ -505,6 +505,7 @@ if(BUILD_TESTING)
   if(WIN32 AND TARGET gta6rt AND TARGET tiny_game)
     # The stand-in game passes only with its own arguments; with others it exits 1, which --run passes through.
     add_test(NAME run_tiny_game COMMAND gta6rt --run $<TARGET_FILE:tiny_game> -- hello 42)
+    set_tests_properties(run_tiny_game PROPERTIES ENVIRONMENT "RECITY_RUN_TLS=1")
     add_test(NAME run_tiny_game_exit_code COMMAND gta6rt --run $<TARGET_FILE:tiny_game> -- wrong args)
     set_tests_properties(run_tiny_game_exit_code PROPERTIES WILL_FAIL TRUE)
     # Mode flags are exclusive: two of them print the usage before anything is mapped or run.

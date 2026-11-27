@@ -112,9 +112,13 @@ Current limits, by design:
 - `--dry-run` never runs image code. `initialise()` runs TLS callbacks and a DLL's `DllMain`;
   `run_tls_callbacks()` is the opt-in seam for `DLL_THREAD_ATTACH`/`DETACH` and for callers that do not
   use `initialise()`. An EXE's entry point is the caller's to run.
-- The loader does not deliver thread attach/detach events. Call `install_tls_for_thread()` before mapped
-  code runs on a thread the runtime created and `uninstall_tls_for_thread()` before it exits; destroy the
-  `Loader` on the thread that called `load()`.
+- On Windows, `--run` installs the TLS template on the entry thread before process attach and CRT startup.
+  Workers started by a mapped `kernel32!CreateThread` or UCRT `_beginthreadex` import receive their own template
+  and the mapped TLS callbacks. The runtime restores the slot after normal return or a mapped
+  `kernel32!ExitThread` / UCRT `_endthreadex` call. Threads created inside host libraries or through dynamically
+  resolved APIs bypass those imports. Embedders using the loader directly manage thread events with
+  `install_tls_for_thread()`, `run_tls_callbacks()` and `uninstall_tls_for_thread()` and destroy the `Loader`
+  on the thread that called `load()`.
 - The TOC of the game's RPF archives is encrypted and is not read here. The loader works on the PE
   files and on any images the caller passes it.
 

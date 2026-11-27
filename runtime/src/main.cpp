@@ -73,7 +73,7 @@ int wmain(int argc, wchar_t** argv) {
     try {
         rt::Loader loader(game_dir);
         rt::Module& main_module = loader.load(image);  // maps, binds and installs TLS; runs no image code
-        if (init || run) {
+        if (init) {  // --run initialises on the game entry thread.
             loader.initialise();  // TLS callbacks, then DllMain(DLL_PROCESS_ATTACH) for DLLs
             std::printf("%zu module(s) initialised\n", loader.modules().size());
         }
@@ -107,7 +107,7 @@ int wmain(int argc, wchar_t** argv) {
         rt::process::set_command_line(image.filename().string(), game_args);
         std::printf("running %s\n", main_module.name.c_str());
         std::fflush(stdout);
-        const int code = rt::process::run_entry(main_module.base + main_module.entry_rva);
+        const int code = rt::process::run_entry(loader, main_module.base + main_module.entry_rva);
         std::fflush(stdout);
         std::printf("game exited with code %d\n", code);
         rt::shims::report_called_unimplemented();

@@ -3,12 +3,14 @@
 //   gta6rt --run tiny_game.exe -- hello 42
 // It checks its arguments, a static initializer, the heap, a file round trip, a second thread, and the
 // xgameruntime.dll imports (answered by the shim registry: the stub DLL it links against would fail them), then
-// calls exit() with 0 when everything held. Two checks are opt-in: thread_local needs static TLS (#93;
-// RECITY_RUN_TLS=1), and a C++ exception (RECITY_RUN_EH=1) needs more than the unwind tables #176 registers on MSVC:
+// calls exit() with 0 when everything held. CTest sets RECITY_RUN_TLS=1 to check static TLS.
+// A C++ exception (RECITY_RUN_EH=1) needs more than the unwind tables #176 registers on MSVC:
 // _CxxThrowException finds the throwing image with RtlPcToFileHeader, which only knows modules the Windows loader
 // mapped. With MinGW (libgcc's SEH unwinder) the #176 tables are enough and the check passes.
 #include <windows.h>
+#include <process.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -41,9 +43,54 @@ bool env_on(const char* name) {
     return GetEnvironmentVariableA(name, buf, sizeof buf) > 0 && buf[0] == '1';
 }
 
-thread_local int t_counter = 5;
+// Force actual reads and writes to the compiler-emitted TLS block in optimized builds.
+thread_local volatile int t_counter = 5;
+thread_local volatile int t_process_seed = 17;
+bool g_check_tls = false;
+std::atomic<int> g_win32_detaches{0};
+std::atomic<int> g_crt_detaches{0};
+
+void NTAPI tls_callback(PVOID, DWORD reason, PVOID) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        g_check_tls = env_on("RECITY_RUN_TLS");
+        if (g_check_tls) t_process_seed = 23;
+    } else if (reason == DLL_THREAD_DETACH && g_check_tls) {
+        if (t_counter == 11) g_win32_detaches.fetch_add(1, std::memory_order_relaxed);
+        if (t_counter == 13) g_crt_detaches.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+bool check_worker_tls(int value) {
+    const bool fresh = t_counter == 5 && t_process_seed == 17;
+    t_counter = value;
+    return fresh && t_counter == value;
+}
+
+DWORD WINAPI win32_worker(LPVOID) {
+    ExitThread(check_worker_tls(11) ? 31 : 1);
+}
+
+unsigned __stdcall crt_worker(void*) {
+    _endthreadex(check_worker_tls(13) ? 37 : 1);
+    return 1;  // The CRT declaration allows a return; the worker must have exited above.
+}
+
+bool exits_with(HANDLE thread, DWORD expected) {
+    if (!thread) return false;
+    DWORD code = 0;
+    const bool exited = WaitForSingleObject(thread, INFINITE) == WAIT_OBJECT_0 &&
+                        GetExitCodeThread(thread, &code) && code == expected;
+    CloseHandle(thread);
+    return exited;
+}
 
 }  // namespace
+
+#pragma section(".CRT$XLB", read)
+#pragma comment(linker, "/include:tiny_game_tls_callback_entry")
+extern "C" {
+__declspec(allocate(".CRT$XLB")) PIMAGE_TLS_CALLBACK tiny_game_tls_callback_entry = tls_callback;
+}
 
 int main(int argc, char** argv) {
     std::printf("tiny_game: started, argc=%d\n", argc);
@@ -83,12 +130,35 @@ int main(int argc, char** argv) {
     XGameRuntimeUninitialize();
 
     if (env_on("RECITY_RUN_TLS")) {
-        int seen = -1;
-        std::thread t([&] { seen = t_counter; t_counter = 9; });
+        const int main_initial = t_counter;
+        check(t_process_seed == 23, "main sees the process-attach TLS write");
+        int worker_initial = -1;
+        int worker_updated = -1;
+        int worker_seed = -1;
+        std::thread t([&] {
+            worker_initial = t_counter;
+            worker_seed = t_process_seed;
+            t_counter = 9;
+            worker_updated = t_counter;
+        });
         t.join();
-        check(t_counter == 5 && seen == 5, "thread_local starts at its initializer on each thread");
+        const int main_after_join = t_counter;
+        std::printf("tiny_game: TLS main %d -> %d, worker %d -> %d\n",
+                    main_initial, main_after_join, worker_initial, worker_updated);
+        check(main_initial == 5, "main thread_local starts at 5");
+        check(worker_initial == 5, "worker thread_local starts at 5");
+        check(worker_seed == 17, "worker sees the TLS template value after process attach");
+        check(worker_updated == 9, "worker thread_local reads back 9");
+        check(main_after_join == 5, "main thread_local remains at 5 after worker joins");
+        check(exits_with(CreateThread(nullptr, 0, win32_worker, nullptr, 0, nullptr), 31),
+              "CreateThread gets fresh TLS and ExitThread preserves the exit code");
+        check(g_win32_detaches.load(std::memory_order_relaxed) == 1, "ExitThread runs the TLS detach callback once");
+        const auto crt_thread = reinterpret_cast<HANDLE>(_beginthreadex(nullptr, 0, crt_worker, nullptr, 0, nullptr));
+        check(exits_with(crt_thread, 37), "_beginthreadex gets fresh TLS and _endthreadex preserves the exit code");
+        check(g_crt_detaches.load(std::memory_order_relaxed) == 1, "_endthreadex runs the TLS detach callback once");
+        check(t_counter == 5 && t_process_seed == 23, "explicit thread exits leave main TLS unchanged");
     } else {
-        std::printf("tiny_game: SKIP thread_local (needs static TLS, #93; RECITY_RUN_TLS=1)\n");
+        std::printf("tiny_game: SKIP thread_local (set RECITY_RUN_TLS=1 to enable)\n");
     }
     if (env_on("RECITY_RUN_EH")) {
         bool caught = false;
