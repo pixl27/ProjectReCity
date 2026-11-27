@@ -6185,6 +6185,8 @@ def assemble(gen):
     cs = gen.stage == "cs"
     ms = gen.stage == "ms"
     gsx = gen.stage == "gs"
+    linear_lds = (gen.emulate and cs and gen.uses_lds and tuple(gen.cs["size"]) == (64, 1, 1)
+                  and gen.succ == [[]])
     if gen.emulate:
         # No subgroup operation is left (x_round does them through %x_buf), so none of their capabilities.
         if any("OpGroupNonUniform" in l or "%sg_lane" in l for b in gen.blocks + list(gen.x_segs.values()) for l in b):
@@ -6204,6 +6206,10 @@ def assemble(gen):
         if x_missing:
             for v in (x_missing - 1, gen.x_lanes + x_threads):
                 gen.cu(v)
+    if linear_lds:
+        for phase in range(len(gen.x_segs) + 1):
+            gen.cu(phase)
+            gen.cu(x_mask + 2 * (phase % 3))
     model = "Vertex" if vs else "GLCompute" if cs else "MeshEXT" if ms else "Geometry" if gsx else "Fragment"
     ms_blk = ms and (gen.uses_clip or gen.uses_cull)
     iface = list(gen.outputs) + list(gen.inputs) + (["%vertex_index", "%instance_index"] if vs else []) +        (["%wg_id", "%local_id"] if cs else []) + (["%lds"] if gen.uses_lds else []) + (
@@ -6762,6 +6768,35 @@ def assemble(gen):
                                  f"OpBranchConditional {again} {head} {end}", f"{end} = OpLabel"])
 
         place(tree)
+    elif linear_lds:
+        # All 64 invocations follow the same sequence. Preserve per-lane EXEC
+        # predicates inside each segment and synchronize the whole workgroup.
+        c = gen.cu
+        lines = ["%pc = OpVariable %_ptr_Function_uint Function %c0",
+                 "%done = OpVariable %_ptr_Function_bool Function %false",
+                 "%x_lid = OpLoad %v3uint %local_id",
+                 "%x_li = OpCompositeExtract %uint %x_lid 0",
+                 "%x_lane = OpCopyObject %uint %x_li",
+                 "%x_wave = OpCopyObject %uint %c0",
+                 "%x_wbase = OpCopyObject %uint %c0"]
+        body = []
+        segments = [(0, gen.blocks[0]), *sorted(gen.x_segs.items())]
+        for phase, (label, part) in enumerate(segments):
+            # Recycle this phase's ballot slot. Only lanes 0 and 1 clear a
+            # word each. Data from the immediately preceding phase stays live.
+            body.extend([f"OpStore %x_it {c(phase)}",
+                         f"%clear{phase} = OpULessThan %bool %x_li {c(2)}",
+                         f"OpSelectionMerge %ready{phase} None",
+                         f"OpBranchConditional %clear{phase} %reset{phase} %ready{phase}",
+                         f"%reset{phase} = OpLabel",
+                         f"%slot{phase} = OpIAdd %uint %x_li {c(x_mask + 2 * (phase % 3))}",
+                         f"%ptr{phase} = OpAccessChain %_ptr_WG_uint_x %x_buf %slot{phase}",
+                         f"OpStore %ptr{phase} {c(0)}", f"OpBranch %ready{phase}",
+                         f"%ready{phase} = OpLabel", f"OpControlBarrier {c(2)} {c(2)} {c(0x948)}",
+                         f"OpBranch %blk{label}", f"%blk{label} = OpLabel"])
+            body.extend(line for line in part if not line.startswith(("OpStore %pc ", "OpStore %done ", "OpStore %x_bar ")))
+            if phase + 1 < len(segments):
+                body.append(f"OpControlBarrier {c(2)} {c(2)} {c(0x948)}")
     elif gen.emulate:
         lines = x_scheduler(gen, x_threads)
         body = []

@@ -623,6 +623,30 @@ def test_wqm_in_a_pixel_shader_uses_the_fragment_quad(make_shader):
 EMULATE_SAMPLES = [p for p in SAMPLES if os.path.basename(p).startswith(("cs_", "ms_"))]
 
 
+@pytest.mark.parametrize(("branch", "group", "expect_scheduler"), [
+    pytest.param("", (64, 1, 1), False, id="straight-line"),
+    pytest.param("s_cmp_eq_u32 s0, 0\ns_cbranch_scc0 1\n", (64, 1, 1), True, id="branch"),
+    pytest.param("", (128, 1, 1), True, id="two-waves"),
+])
+def test_wave64_lds_scheduler_selection(branch, group, expect_scheduler, make_shader, monkeypatch):
+    source = ("; mattr: +wavefrontsize64,-wavefrontsize32\n"
+              "s_mov_b64 exec, -1\n"
+              "v_lshlrev_b32_e32 v1, 2, v0\n"
+              "ds_write_b32 v1, v0\n" + branch +
+              "v_mov_b32_e32 v2, v0\ns_barrier\nds_read_b32 v3, v1\ns_endpgm\n")
+    shader = make_shader(source, "cs_lds_scheduler", cs_header=(0x8088, group))
+    monkeypatch.setattr(rdna2spirv, "WAVE64_EMULATE", True)
+    asm = shader.translate()
+    shader.validate(asm)
+    assert rdna2spirv.translate.last_gen.emulate
+    assert ("OpSwitch" in asm) == expect_scheduler
+    if not expect_scheduler:
+        write_ptr, read_ptr = re.findall(r"(%\w+) = OpAccessChain %\w+ %lds ", asm)
+        write = asm.index(f"OpStore {write_ptr} ")
+        read = asm.index(f"OpLoad %uint {read_ptr}\n")
+        assert "OpControlBarrier" in asm[write:read]
+
+
 @pytest.mark.parametrize("path", EMULATE_SAMPLES, ids=[os.path.basename(p) for p in EMULATE_SAMPLES])
 def test_wave64_emulate_uses_no_subgroup_ops(path, make_shader, monkeypatch):
     """--wave64-emulate: a wave64 compute or mesh shader validates and uses no subgroup operation (everything
