@@ -1688,8 +1688,21 @@ inline void emit(const PreparedList& prepared, VkCommandBuffer command_buffer, c
                 const VkImageLayout dst_layout = detail::copy_layout(
                     vk, command_buffer, p.binding, dst_id, detail::planes_for_layout(p.binding, p.range, separate),
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, tracker);
-                vk.copy_image(command_buffer, p.source.image, src_layout, p.binding.image, dst_layout,
-                              std::uint32_t(p.image_copies.size()), p.image_copies.data());
+                const auto copy_regions = [&](std::uint32_t count, const VkImageCopy* regions) {
+                    vk.copy_image(command_buffer, p.source.image, src_layout, p.binding.image, dst_layout, count, regions);
+                };
+                if (std::holds_alternative<CopyResource>(command) &&
+                    p.binding.aspects == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+                    // prepare_resource_copy groups mips by aspect. Order writes to the two aspects of the
+                    // packed destination just as consecutive per-plane CopyTextureRegion calls are ordered.
+                    const auto mips = p.binding.mip_levels;
+                    copy_regions(mips, p.image_copies.data());
+                    detail::memory_barrier(vk, command_buffer, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                           VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+                    copy_regions(mips, p.image_copies.data() + mips);
+                } else {
+                    copy_regions(std::uint32_t(p.image_copies.size()), p.image_copies.data());
+                }
             } else if (p.binding.image) {
                 const VkImageLayout dst_layout = detail::copy_layout(
                     vk, command_buffer, p.binding, dst_id, detail::planes_for_layout(p.binding, p.range, separate),
