@@ -16,13 +16,16 @@ module, is unverified (see [VERIFY](#verify)).
 The shim is optional, and the build downloads nothing unless asked. SDL3 is zlib-licensed. CMake builds the shim when
 SDL3 is available in one of these ways:
 
-- **Installed SDL3**, 3.2 or newer, found by `find_package(SDL3)`: set `SDL3_DIR` or `CMAKE_PREFIX_PATH`, for example
+- **Installed static SDL3**, 3.2 or newer, found by `find_package(SDL3)`: set `SDL3_DIR` or `CMAKE_PREFIX_PATH`, for example
   `-DSDL3_DIR=C:/SDL3/cmake`. No flag is needed.
 - **`-DRECITY_SDL3_FETCH=ON`**: downloads the pinned release `SDL3-3.4.20.tar.gz` from SDL's GitHub releases once at
   configure time, checks its SHA-256, and builds it static with only the gamepad parts (no audio, video, GPU or
   render). That takes about a minute on the first build. `scripts/build_runtime.ps1 -FetchSdl3` passes it.
 - **A local copy of that tarball**: extract it and pass `-DFETCHCONTENT_SOURCE_DIR_SDL3=<path to SDL3-3.4.20>`; it is
   built the same way, without a download.
+
+If the Windows development package provides only the shared library, use either source-build option above.
+An installed static library takes precedence over the source build.
 
 Without any of these, or with `-DRECITY_SDL3=OFF`, configure prints a message and `gta6rt` is built without the shim:
 it has no `GameInputCreate`, as before, so the loader binds it to the host's `GameInput.dll` or the unimplemented
