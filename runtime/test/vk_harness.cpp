@@ -254,7 +254,24 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "unsupported: no geometryShader\n");
         return 77;
     }
+    const char* replay_stage = std::getenv("VKH_BALLOT_REPLAY_STAGE");
+    uint32_t replay_vertices = 3;
+    VkPipelineStageFlags replay_access = 0;
     VkPhysicalDeviceFeatures feats{};
+    if (replay_stage) {
+        if (!heap_env || mesh || gs_path || clip_shifts) return 2;
+        if (!std::strcmp(replay_stage, "vs")) {
+            if (!f2q.features.vertexPipelineStoresAndAtomics) return 77;
+            // Enough unique vertices for at least one full graphics subgroup in each capture draw.
+            replay_vertices = 192;
+            feats.vertexPipelineStoresAndAtomics = VK_TRUE;
+            replay_access = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+        } else if (!std::strcmp(replay_stage, "ps")) {
+            if (!f2q.features.fragmentStoresAndAtomics) return 77;
+            feats.fragmentStoresAndAtomics = VK_TRUE;
+            replay_access = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        } else return 2;
+    }
     if (clip_shifts && !f2q.features.shaderClipDistance) {
         std::fprintf(stderr, "unsupported: shaderClipDistance\n");
         return 77;
@@ -380,6 +397,11 @@ int main(int argc, char** argv) {
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo reqSg{
         VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO};
     reqSg.requiredSubgroupSize = req_sg;
+    if (replay_stage && pc[1] == 0) {
+        if (req_sg || !f13q.subgroupSizeControl) return 77;
+        const unsigned stage_index = replay_access == VK_PIPELINE_STAGE_VERTEX_SHADER_BIT ? 0 : 1;
+        stages[stage_index].flags |= VK_PIPELINE_SHADER_STAGE_CREATE_ALLOW_VARYING_SUBGROUP_SIZE_BIT;
+    }
     if (req_sg > 0 && f13q.subgroupSizeControl &&
         req_sg >= sgProps.minSubgroupSize && req_sg <= sgProps.maxSubgroupSize) {
         if (mesh && (sgProps.requiredSubgroupSizeStages & VK_SHADER_STAGE_MESH_BIT_EXT))
@@ -468,6 +490,25 @@ int main(int argc, char** argv) {
     for (float& c : clears[0].color.float32) c = -1;   // marks untouched pixels
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.renderPass = rp; rbi.framebuffer = fb; rbi.renderArea = sc; rbi.clearValueCount = rpi.attachmentCount; rbi.pClearValues = clears;
+    if (replay_stage) {
+        LOADD(vkCmdPushConstants);
+        LOADD(vkCmdPipelineBarrier);
+        // Draw one physical half per pass, with a device-side dependency before reading the shared heap.
+        for (uint32_t phase = 0; phase < 2; ++phase) {
+            pc[0] = phase;
+            vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+            vkCmdPushConstants(cmd, pl, pcs, 0, sizeof(pc), pc);
+            vkCmdDraw(cmd, replay_vertices, 1, 0, 0);
+            vkCmdEndRenderPass(cmd);
+            VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            const auto stages = replay_access | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            vkCmdPipelineBarrier(cmd, stages, stages, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+        }
+        pc[0] = 2;
+    }
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
     if (group_readback) {
         LOADD(vkCmdClearAttachments);
