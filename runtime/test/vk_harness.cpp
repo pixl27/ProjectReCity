@@ -5,6 +5,10 @@
 //   vk_harness <ms.spv> <fs.spv> <out.raw> --mesh-group-readback X Y Z
 // The latter captures one full-screen triangle per mesh workgroup, in Vulkan rasterization order.
 //
+// VKH_DRAW_COUNTS=vertices,instances overrides the non-mesh draw (default: 3,1).
+// VKH_VARYING_SUBGROUP_STAGE=vs|ps|gs lets the driver select a subgroup size for that stage.
+// The requested stage must exist and have no required subgroup size. Read SubgroupSize in the shader to measure it.
+//
 // Push constants follow the contract in docs/design.md: s0..s31, then the heap base lo/hi. They are zero unless
 //   VKH_SGPRS=w0,w1,...          sets s0, s1, ... (decimal or 0x hex)
 //   VKH_HEAP=addr=word,...       allocates a zeroed 64 KiB heap (Xbox VA 0 = its device address), writes each word at
@@ -103,6 +107,14 @@ int main(int argc, char** argv) {
         }
     } else if (argc > 5) {
         W = atoi(argv[4]); H = atoi(argv[5]);
+    }
+    uint32_t draw_vertices = 3, draw_instances = 1;
+    if (const char* counts = std::getenv("VKH_DRAW_COUNTS")) {
+        if (!parse_u32(counts, draw_vertices) || *counts++ != ',' || !parse_u32(counts, draw_instances) ||
+            *counts || !draw_vertices || !draw_instances) {
+            std::fprintf(stderr, "VKH_DRAW_COUNTS: expected positive vertices,instances\n");
+            return 2;
+        }
     }
     uint32_t pc[36] = {};
     const char* sgprs_env = std::getenv("VKH_SGPRS");
@@ -389,6 +401,22 @@ int main(int argc, char** argv) {
         else if (!mesh && !gs_path && (sgProps.requiredSubgroupSizeStages & VK_SHADER_STAGE_FRAGMENT_BIT))
             stages[1].pNext = &reqSg;
     }
+    if (const char* varying = std::getenv("VKH_VARYING_SUBGROUP_STAGE")) {
+        VkPipelineShaderStageCreateInfo* stage = nullptr;
+        if (!std::strcmp(varying, "vs") && !mesh) stage = &stages[0];
+        if (!std::strcmp(varying, "ps")) stage = &stages[1];
+        if (!std::strcmp(varying, "gs") && gs_path) stage = &stages[2];
+        if (!stage || stage->pNext) {
+            std::fprintf(stderr, "VKH_VARYING_SUBGROUP_STAGE: expected an active vs, ps or gs stage without a required size\n");
+            return 2;
+        }
+        if (!f13q.subgroupSizeControl) {
+            std::fprintf(stderr, "unsupported: varying subgroup size needs subgroupSizeControl\n");
+            return 77;
+        }
+        stage->flags |= VK_PIPELINE_SHADER_STAGE_CREATE_ALLOW_VARYING_SUBGROUP_SIZE_BIT;
+        std::fprintf(stderr, "%s stage: allowing varying subgroup size\n", varying);
+    }
     VkPipelineVertexInputStateCreateInfo vin{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -489,7 +517,7 @@ int main(int argc, char** argv) {
     if (mesh)
         reinterpret_cast<PFN_vkCmdDrawMeshTasksEXT>(vkGetDeviceProcAddr(dev, "vkCmdDrawMeshTasksEXT"))(cmd, groups[0], groups[1], groups[2]);
     else
-        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vkCmdDraw(cmd, draw_vertices, draw_instances, 0, 0);
     vkCmdEndRenderPass(cmd);
     VkBufferImageCopy reg{}; reg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; reg.imageExtent = {W, H, 1};
     vkCmdCopyImageToBuffer(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &reg);

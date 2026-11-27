@@ -7768,8 +7768,8 @@ def shader_meta(g, asm, src_path=None, fssm_path=None):
          "features": sorted({feats[c] for c in caps if c in feats and not feats[c].startswith(("core", "shaderImage1D"))}),
          "bindings": binds, "push_constant_bytes": 4 * USER_SGPRS + 16,
          "subgroup_size": 64 if g.wave64 else 32,
-         # 64-wide subgroups can only be requested for compute/mesh on RADV and NVIDIA; VS/PS/GS wave64
-         # shaders must be treated as emulated (per-32-lane halves) until cross-half ops go through LDS.
+         # VS/PS/GS wave64 uses native subgroups and is approximate when their width is 32.
+         # Only wave64_exchange="workgroup" marks exact emulation independent of subgroup width.
          "wave64_emulated": bool(g.wave64 and (g.stage in ("vs", "ps", "gs") or g.emulate))}
     if g.emulate:
         # Exact on any subgroup size: no subgroup operation, cross-lane data in %x_buf (workgroup memory).

@@ -526,7 +526,7 @@ int main(int argc, char** argv) {
                 list += st;
             }
             std::fprintf(stderr,
-                "note: %u-wide subgroups not supported for %s; those pipelines are compiled without a required subgroup size\n",
+                "note: cannot require %u-wide subgroups for %s; those pipelines use an implementation-selected subgroup size\n",
                 sg, list.c_str());
         }
     }

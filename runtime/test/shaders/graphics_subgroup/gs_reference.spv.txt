@@ -1,0 +1,71 @@
+; Independently count Vulkan GS subgroup votes, without translating RDNA2.
+OpCapability Shader
+OpCapability Geometry
+OpCapability GroupNonUniform
+OpCapability GroupNonUniformBallot
+OpMemoryModel Logical GLSL450
+OpEntryPoint Geometry %main "main" %pos_in %pos_out %size %lane %result
+OpExecutionMode %main Triangles
+OpExecutionMode %main OutputTriangleStrip
+OpExecutionMode %main OutputVertices 3
+OpDecorate %pos_in BuiltIn Position
+OpDecorate %pos_out BuiltIn Position
+OpDecorate %size BuiltIn SubgroupSize
+OpDecorate %lane BuiltIn SubgroupLocalInvocationId
+OpDecorate %result Location 1
+OpDecorate %result Flat
+%void = OpTypeVoid
+%fn = OpTypeFunction %void
+%bool = OpTypeBool
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%v4f = OpTypeVector %float 4
+%v4u = OpTypeVector %uint 4
+%zero = OpConstant %uint 0
+%one = OpConstant %uint 1
+%two = OpConstant %uint 2
+%three = OpConstant %uint 3
+%thirty_two = OpConstant %uint 32
+%true = OpConstantTrue %bool
+%arr_v4f = OpTypeArray %v4f %three
+%pin_u = OpTypePointer Input %uint
+%pin_arr_v4f = OpTypePointer Input %arr_v4f
+%pin_v4f = OpTypePointer Input %v4f
+%pout_v4f = OpTypePointer Output %v4f
+%pos_in = OpVariable %pin_arr_v4f Input
+%pos_out = OpVariable %pout_v4f Output
+%size = OpVariable %pin_u Input
+%lane = OpVariable %pin_u Input
+%result = OpVariable %pout_v4f Output
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%w = OpLoad %uint %size
+%i = OpLoad %uint %lane
+%hi = OpUGreaterThanEqual %bool %i %thirty_two
+%b_hi = OpGroupNonUniformBallot %v4u %three %hi
+%b_full = OpGroupNonUniformBallot %v4u %three %true
+%h = OpGroupNonUniformBallotBitCount %uint %three Reduce %b_hi
+%n = OpGroupNonUniformBallotBitCount %uint %three Reduce %b_full
+%i_f = OpBitcast %float %i
+%h_f = OpBitcast %float %h
+%n_f = OpBitcast %float %n
+%w_f = OpBitcast %float %w
+%pixel = OpCompositeConstruct %v4f %i_f %h_f %n_f %w_f
+%p0 = OpAccessChain %pin_v4f %pos_in %zero
+%a0 = OpLoad %v4f %p0
+OpStore %pos_out %a0
+OpStore %result %pixel
+OpEmitVertex
+%p1 = OpAccessChain %pin_v4f %pos_in %one
+%a1 = OpLoad %v4f %p1
+OpStore %pos_out %a1
+OpStore %result %pixel
+OpEmitVertex
+%p2 = OpAccessChain %pin_v4f %pos_in %two
+%a2 = OpLoad %v4f %p2
+OpStore %pos_out %a2
+OpStore %result %pixel
+OpEmitVertex
+OpEndPrimitive
+OpReturn
+OpFunctionEnd

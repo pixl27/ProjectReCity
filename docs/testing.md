@@ -10,6 +10,21 @@ This page collects the setup steps and the problems testers have run into so far
 
 [claims]: https://github.com/pixl27/ProjectReCity/issues/1
 
+## Measuring graphics subgroup size
+
+With `vk_harness`, `llvm-mc`, `spirv-as` and `spirv-val` available, run a synthetic wave64 ballot in each of VS, PS and GS:
+
+```powershell
+python -I runtime/test/shaders/graphics_subgroup/check.py runtime/build/vk_harness.exe runtime/build/graphics-subgroup
+```
+
+The driver selects the actual subgroup width. The test reads `SubgroupSize` and the ballot results in the same
+shader invocation, first with the default pipeline and then with `VKH_VARYING_SUBGROUP_STAGE` set to the tested stage.
+The expected result from 64 active lanes is 32 upper-half votes and 64 total votes. A physical wave32 sees 0 upper-half
+votes and 32 total votes when full. The output also reports partially occupied subgroups. Contradictory subgroup
+measurements are marked inconclusive and produce a nonzero exit status with `--strict`. The geometry test uses a
+separate direct Vulkan ballot to check whether a contradiction also occurs without RDNA2 translation.
+
 ## What you need
 
 - **Python 3.11+.** `scripts/run_gpu_tests.py` needs at least 3.10.
