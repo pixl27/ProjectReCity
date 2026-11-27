@@ -7903,7 +7903,20 @@ def main():
     ap.add_argument("--wave64-emulate", action="store_true",
                     help="wave64 compute and mesh shaders exact on any subgroup size (32-wide NVIDIA, Intel): "
                          "cross-lane operations go through workgroup memory instead of subgroup operations")
+    ap.add_argument("--graphics-replay-glsl", action="store_true",
+                    help="emit a single experimental VS/PS register-replay test shader as GLSL (--out FILE)")
     a = ap.parse_args()
+    if a.graphics_replay_glsl:
+        import graphics_register_replay
+        if not a.src.endswith(".s") or any((a.merge, a.shard, a.limit, a.no_asm, a.dispatch_loop, a.wave64_emulate, a.fssm_dir)):
+            ap.error("graphics replay expects one disassembly and --out FILE")
+        info = parse_file(a.src)
+        try:
+            source = graphics_register_replay.generate(info, stage_of(info["name"], a.src), Unsupported)
+        except Unsupported as error:
+            ap.error(str(error))
+        Path(a.out).write_text(source, encoding="ascii")
+        return 0
     global STRUCTURED, WAVE64_EMULATE
     STRUCTURED = not a.dispatch_loop
     WAVE64_EMULATE = a.wave64_emulate
