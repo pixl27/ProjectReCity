@@ -237,9 +237,6 @@ struct DeviceState {
     PFN_vkGetDeviceImageMemoryRequirements image_requirements = nullptr;  // Vulkan 1.3 or VK_KHR_maintenance4
     PFN_vkGetPhysicalDeviceFormatProperties2 format_properties2 = nullptr;
 
-    // Cached physical-device no-attachment sample counts for D3D12_OPTIONS19.
-    UINT no_output_sample_counts = 0;
-
     // VK_EXT_host_image_copy; null unless the device enabled it and its copies accept GENERAL.
     PFN_vkCopyMemoryToImageEXT copy_memory_to_image = nullptr;
     PFN_vkCopyImageToMemoryEXT copy_image_to_memory = nullptr;
@@ -1324,22 +1321,11 @@ public:
                 state_.image_requirements =
                     reinterpret_cast<PFN_vkGetDeviceImageMemoryRequirements>(get_device(info.device, name));
 
-        if (info.physical && info.get_instance_proc) {
-            const auto get_props = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(
-                info.get_instance_proc(info.instance, "vkGetPhysicalDeviceProperties"));
-            if (get_props) {
-                VkPhysicalDeviceProperties props{};
-                get_props(info.physical, &props);
-                if (state_.info.max_push_constants_size == 0) {
-                    state_.info.max_push_constants_size = props.limits.maxPushConstantsSize;
-                    state_.info.push_constants_need_fallback = (state_.info.max_push_constants_size < 144);
-                }
-                constexpr VkSampleCountFlags kD3D12SampleCounts =
-                    VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT |
-                    VK_SAMPLE_COUNT_8_BIT | VK_SAMPLE_COUNT_16_BIT | VK_SAMPLE_COUNT_32_BIT;
-                state_.no_output_sample_counts =
-                    static_cast<UINT>(props.limits.framebufferNoAttachmentsSampleCounts & kD3D12SampleCounts);
-            }
+        VkPhysicalDeviceProperties properties{};
+        device_properties(info.physical, &properties);
+        if (state_.info.max_push_constants_size == 0) {
+            state_.info.max_push_constants_size = properties.limits.maxPushConstantsSize;
+            state_.info.push_constants_need_fallback = (state_.info.max_push_constants_size < 144);
         }
 
         state_.context = std::make_unique<recity::VulkanContext>(get_device, info.device,
@@ -1349,8 +1335,6 @@ public:
         if (info.bindless && state_.context->loaded() && !create_bindless(get_device))
             std::fprintf(stderr, "[rt] d3d12: the bindless set 0 could not be created\n");
         // Timestamps: what the one VkQueue every D3D12 queue submits to can write.
-        VkPhysicalDeviceProperties properties{};
-        device_properties(info.physical, &properties);
         std::uint32_t family_count = 0;
         queue_families(info.physical, &family_count, nullptr);
         std::vector<VkQueueFamilyProperties> families(family_count);
@@ -2334,7 +2318,8 @@ public:
             auto* opts = static_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS19*>(data);
             *opts = {};
             opts->MismatchingOutputDimensionsSupported = FALSE;
-            opts->SupportedSampleCountsWithNoOutputs = state_.no_output_sample_counts;
+            // D3D12 specifies 1 until sample-frequency draws without RTVs or a DSV are supported.
+            opts->SupportedSampleCountsWithNoOutputs = 1;
             opts->PointSamplingAddressesNeverRoundUp = FALSE;
             opts->RasterizerDesc2Supported = FALSE;
             opts->NarrowQuadrilateralLinesSupported = FALSE;
