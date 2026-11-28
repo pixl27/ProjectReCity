@@ -240,6 +240,25 @@ void test_classification() {
           "a bad value is log and invalid");
 }
 
+void test_missing_dstorage_factory() {
+    using FactoryFn = HRESULT(WINAPI*)(REFIID, void**);
+    for (const auto policy : {UnimplementedPolicy::Log, UnimplementedPolicy::Fail}) {
+        rt::shims::set_unimplemented_policy(policy);
+        for (const auto* dll : {"dstorage.dll", "dstorage_xs.dll"}) {
+            const auto factory = reinterpret_cast<FactoryFn>(
+                rt::shims::make_unimplemented_thunk(dll, "DStorageGetFactory"));
+            check(factory != nullptr, std::string(dll) + " has a missing-import thunk");
+            if (!factory) continue;
+            void* out = &out;
+            const GUID iid{};
+            check(factory(iid, &out) == E_NOTIMPL && out == nullptr,
+                  std::string(dll) + " fails explicitly and clears the missing factory");
+            check(factory(iid, nullptr) == E_POINTER, std::string(dll) + " rejects a null output pointer");
+        }
+    }
+    rt::shims::set_unimplemented_policy(UnimplementedPolicy::Log);
+}
+
 void test_in_process(const fs::path& dir) {
     rt::Loader loader(dir);
     rt::Module& m = loader.load(write_image(dir));
@@ -470,6 +489,7 @@ int wmain(int argc, wchar_t** argv) {
 
         const fs::path dir = test_dir();
         test_classification();
+        test_missing_dstorage_factory();
         test_in_process(dir);
         test_abi(dir);
         test_env_and_default(dir);
