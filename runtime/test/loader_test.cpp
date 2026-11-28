@@ -539,7 +539,24 @@ void test_initialise_rejects() {
         g_main_ran = 0;
         auto img = make_init_image();
         emit_store_stub(img, 0x240, reinterpret_cast<uint64_t>(&g_main_ran), 3, 0);  // DllMain returns FALSE
-        expect_init_rejects("a DllMain that returns FALSE is rejected", img);
+        rt::Loader loader(g_dir);
+        loader.load(write_image(img));
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            const char* what = attempt ? "initialisation still rejects the failed DLL on retry"
+                                       : "a DllMain that returns FALSE is rejected";
+            g_main_ran = 0;
+            try {
+                loader.initialise();
+                failed(what, "initialisation succeeded");
+            } catch (const std::runtime_error& e) {
+                const auto expected = attempt ? 0u : 3u;
+                if (std::string(e.what()).find("DllMain returned FALSE") != std::string::npos &&
+                    g_main_ran == expected)
+                    pass(what);
+                else
+                    failed(what, "unexpected error or repeat execution of DllMain");
+            }
+        }
     }
 }
 
